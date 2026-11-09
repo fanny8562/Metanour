@@ -1,0 +1,127 @@
+"""
+rag.py - RAG 问答核心
+用法（在 D:\\tcm-ai 目录下，(.venv) 已激活）：
+    python app\\rag.py
+"""
+import json
+import os
+import hashlib
+
+import chromadb
+from dotenv import load_dotenv
+from openai import OpenAI
+import jieba
+
+load_dotenv()
+
+# ===== 配置 =====
+CHROMA_DIR = "data/chroma"
+CHUNKS_FILE = "data/processed/chunks.jsonl"
+COLLECTION_NAME = "tcm_corpus_v3"
+TOP_K = 3
+EMBED_DIM = 256
+
+
+# 本地 hash embedding（零下载，先跑通流程；后续可换中文语义模型）
+def embed_texts(texts):
+    """把文本列表转成向量列表"""
+    results = []
+    for text in texts:
+        vec = [0.0] * EMBED_DIM
+        for w in jieba.lcut(text):
+            h = int(hashlib.md5(w.encode()).hexdigest(), 16)
+            idx = h % EMBED_DIM
+            vec[idx] += 1 if (h >> 16) % 2 == 0 else -1
+        norm = sum(v * v for v in vec) ** 0.5
+        results.append([v / norm for v in vec] if norm > 0 else vec)
+    return results
+
+
+# DeepSeek 客户端（兼容 OpenAI 格式）
+llm_client = OpenAI(
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+    base_url="https://api.deepseek.com/v1",
+)
+
+# ChromaDB 本地持久化客户端
+chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+
+
+def build_index():
+    """从 chunks.jsonl 建/重建向量库"""
+    col = chroma_client.get_or_create_collection(COLLECTION_NAME)
+
+    # 清空旧数据
+    if col.count() > 0:
+        all_ids = col.get()["ids"]
+        col.delete(ids=all_ids)
+
+    docs, ids, metas = [], [], []
+    with open(CHUNKS_FILE, encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            docs.append(rec["text"])
+            ids.append(rec["id"])
+            metas.append({
+                "source_file": rec["source_file"],
+                "category": rec["category"],
+                "title": rec["title"],
+            })
+
+    # 手动计算向量，直接传入 embeddings
+    embeddings = embed_texts(docs)
+    col.add(embeddings=embeddings, documents=docs, ids=ids, metadatas=metas)
+    print(f"已入库 {col.count()} 块语料")
+
+
+def ask(question: str) -> str:
+    """检索相关语料 + 调 DeepSeek 生成回答"""
+    col = chroma_client.get_collection(COLLECTION_NAME)
+
+    # 1. 手动计算问题向量，直接 query_embeddings
+    query_vec = embed_texts([question])[0]
+    results = col.query(query_embeddings=[query_vec], n_results=TOP_K)
+    contexts = results["documents"][0]
+    sources = sorted(set(m["source_file"] for m in results["metadatas"][0]))
+
+    # 2. 拼 prompt
+    context_text = "\n\n".join(
+        [f"[资料{i+1}]\n{c}" for i, c in enumerate(contexts)]
+    )
+    prompt = f"""你是一位中医养生科普助手。请严格依据下面提供的资料回答用户问题。
+规则：
+1. 只根据资料回答，不要编造；资料里没有就说"资料中未提及"
+2. 不做医疗诊断，不承诺疗效，必要时提示就医
+3. 回答用简洁的中文，口语化一点
+
+【参考资料】
+{context_text}
+
+【用户问题】{question}"""
+
+    # 3. 调 DeepSeek 生成回答
+    resp = llm_client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+    )
+    answer = resp.choices[0].message.content
+
+    # 4. 附上来源
+    answer += f"\n\n—— 参考资料：{', '.join(sources)}"
+    return answer
+
+
+if __name__ == "__main__":
+    build_index()
+    print("\nRAG 已就绪！输入问题开始对话（输入 q 退出）")
+    while True:
+        q = input("\n你问：").strip()
+        if q.lower() in ("q", "quit", "exit"):
+            break
+        if not q:
+            continue
+        try:
+            print(f"\nAI 老中医：\n{ask(q)}")
+        except Exception as e:
+            print(f"\n出错了：{e}")
