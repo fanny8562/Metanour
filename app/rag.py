@@ -5,36 +5,35 @@ rag.py - RAG 问答核心
 """
 import json
 import os
-import hashlib
+
+# 国内镜像，加速 huggingface 模型下载
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 import chromadb
 from dotenv import load_dotenv
 from openai import OpenAI
-import jieba
+from sentence_transformers import SentenceTransformer
 
 load_dotenv()
 
 # ===== 配置 =====
 CHROMA_DIR = "data/chroma"
 CHUNKS_FILE = "data/processed/chunks.jsonl"
-COLLECTION_NAME = "tcm_corpus_v3"
+COLLECTION_NAME = "tcm_corpus_v4"
 TOP_K = 3
-EMBED_DIM = 256
+EMBED_MODEL = "BAAI/bge-small-zh-v1.5"
 
 
-# 本地 hash embedding（零下载，先跑通流程；后续可换中文语义模型）
+# 加载中文语义模型（首次运行自动从国内镜像下载，约 100MB）
+print(f"正在加载 embedding 模型 {EMBED_MODEL} ...")
+embedder = SentenceTransformer(EMBED_MODEL)
+print("模型加载完成")
+
+
 def embed_texts(texts):
     """把文本列表转成向量列表"""
-    results = []
-    for text in texts:
-        vec = [0.0] * EMBED_DIM
-        for w in jieba.lcut(text):
-            h = int(hashlib.md5(w.encode()).hexdigest(), 16)
-            idx = h % EMBED_DIM
-            vec[idx] += 1 if (h >> 16) % 2 == 0 else -1
-        norm = sum(v * v for v in vec) ** 0.5
-        results.append([v / norm for v in vec] if norm > 0 else vec)
-    return results
+    embeddings = embedder.encode(texts, normalize_embeddings=True)
+    return embeddings.tolist()
 
 
 # DeepSeek 客户端（兼容 OpenAI 格式）
@@ -68,7 +67,6 @@ def build_index():
                 "title": rec["title"],
             })
 
-    # 手动计算向量，直接传入 embeddings
     embeddings = embed_texts(docs)
     col.add(embeddings=embeddings, documents=docs, ids=ids, metadatas=metas)
     print(f"已入库 {col.count()} 块语料")
@@ -78,7 +76,7 @@ def ask(question: str) -> str:
     """检索相关语料 + 调 DeepSeek 生成回答"""
     col = chroma_client.get_collection(COLLECTION_NAME)
 
-    # 1. 手动计算问题向量，直接 query_embeddings
+    # 1. 向量检索 top-K
     query_vec = embed_texts([question])[0]
     results = col.query(query_embeddings=[query_vec], n_results=TOP_K)
     contexts = results["documents"][0]
