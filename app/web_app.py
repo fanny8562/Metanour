@@ -25,7 +25,25 @@ def load_models():
     """加载模型和数据库（只加载一次，缓存复用）"""
     embedder = SentenceTransformer("BAAI/bge-small-zh-v1.5")
     chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
-    col = chroma_client.get_collection(COLLECTION_NAME)
+
+    # 如果数据库为空，自动建库
+    col = chroma_client.get_or_create_collection(COLLECTION_NAME)
+    if col.count() == 0:
+        import json
+        with open("data/processed/chunks.jsonl", encoding="utf-8") as f:
+            docs, ids, metas = [], [], []
+            for line in f:
+                rec = json.loads(line)
+                docs.append(rec["text"])
+                ids.append(rec["id"])
+                metas.append({
+                    "source_file": rec["source_file"],
+                    "category": rec["category"],
+                    "title": rec["title"],
+                })
+        embeddings = embedder.encode(docs, normalize_embeddings=True).tolist()
+        col.add(embeddings=embeddings, documents=docs, ids=ids, metadatas=metas)
+
     llm = OpenAI(
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com/v1",
