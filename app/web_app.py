@@ -6,6 +6,9 @@ web_app.py - AI 老中医养生助手 Web 界面
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
+import json
+from datetime import datetime, timedelta
+
 import streamlit as st
 import chromadb
 from openai import OpenAI
@@ -175,8 +178,8 @@ st.caption("基于中医养生知识库的 RAG 问答系统 · 仅供养生参�
 with st.spinner("正在加载知识库..."):
     embedder, col, llm = load_models()
 
-# 两个标签页
-tab1, tab2, tab3 = st.tabs(["💬 养生问答", "📋 体质自测", "🩺 老中医问诊"])
+# 三个标签页
+tab1, tab2, tab3, tab4 = st.tabs(["💬 养生问答", "📋 体质自测", "🩺 老中医问诊", "✅ 养生打卡"])
 
 with tab1:
     # 初始化聊天历史
@@ -293,3 +296,87 @@ with tab3:
             st.session_state.consult_answers = []
             st.session_state.consult_done = False
             st.rerun()
+
+with tab4:
+    st.subheader("✅ 养生打卡")
+    st.caption("每天坚持练功，记录你的养生打卡")
+
+    # 打卡数据文件
+    CHECKIN_FILE = "data/checkin.json"
+
+    # 加载打卡记录
+    def load_checkins():
+        if os.path.exists(CHECKIN_FILE):
+            with open(CHECKIN_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        return []
+
+    def save_checkins(checkins):
+        os.makedirs(os.path.dirname(CHECKIN_FILE), exist_ok=True)
+        with open(CHECKIN_FILE, "w", encoding="utf-8") as f:
+            json.dump(checkins, f, ensure_ascii=False, indent=2)
+
+    checkins = load_checkins()
+
+    # 可选功法
+    EXERCISES = ["八段锦", "五禽戏", "六字诀", "易筋经", "静坐冥想", "其他"]
+
+    # 今天是否已打卡
+    today = datetime.now().strftime("%Y-%m-%d")
+    today_done = any(c["date"] == today for c in checkins)
+
+    if not today_done:
+        st.write("今天还没打卡，选一个今天练的功法：")
+        selected = st.selectbox("选择功法", EXERCISES)
+        note = st.text_input("备注（可选）", placeholder="比如：练了15分钟")
+
+        if st.button("完成今日打卡", type="primary"):
+            checkins.append({
+                "date": today,
+                "exercise": selected,
+                "note": note,
+            })
+            save_checkins(checkins)
+            st.success(f"🎉 打卡成功！今天练了{selected}，继续坚持！")
+            st.rerun()
+    else:
+        st.success(f"✅ 今天已打卡！继续保持")
+
+    # 统计
+    st.divider()
+    col1, col2, col3 = st.columns(3)
+    total_days = len(checkins)
+
+    # 计算连续打卡天数
+    streak = 0
+    current = datetime.now().date()
+    while True:
+        date_str = current.strftime("%Y-%m-%d")
+        if any(c["date"] == date_str for c in checkins):
+            streak += 1
+            current -= timedelta(days=1)
+        else:
+            break
+
+    with col1:
+        st.metric("累计打卡", f"{total_days} 天")
+    with col2:
+        st.metric("连续打卡", f"{streak} 天")
+    with col3:
+        # 统计最常练的功法
+        if checkins:
+            from collections import Counter
+            exercise_count = Counter(c["exercise"] for c in checkins)
+            most_common = exercise_count.most_common(1)[0]
+            st.metric("最常练", most_common[0])
+        else:
+            st.metric("最常练", "-")
+
+    # 打卡历史
+    st.divider()
+    st.subheader("📅 打卡历史")
+    if checkins:
+        for c in reversed(checkins[-10:]):  # 最近10条
+            st.write(f"**{c['date']}** — {c['exercise']}" + (f"（{c['note']}）" if c.get("note") else ""))
+    else:
+        st.write("还没有打卡记录，今天开始第一次吧！")
