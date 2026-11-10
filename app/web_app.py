@@ -176,7 +176,7 @@ with st.spinner("正在加载知识库..."):
     embedder, col, llm = load_models()
 
 # 两个标签页
-tab1, tab2 = st.tabs(["💬 养生问答", "📋 体质自测"])
+tab1, tab2, tab3 = st.tabs(["💬 养生问答", "📋 体质自测", "🩺 老中医问诊"])
 
 with tab1:
     # 初始化聊天历史
@@ -208,3 +208,88 @@ with tab1:
 
 with tab2:
     run_quiz()
+
+with tab3:
+    st.subheader("🩺 老中医问诊")
+    st.caption("我来问你几个问题，帮你判断体质倾向，最后给养生建议")
+
+    # 问诊问题列表
+    CONSULT_QUESTIONS = [
+        "你平时容易疲乏、没力气吗？",
+        "你手脚容易发凉、怕冷吗？",
+        "你手脚心容易发热、口干吗？",
+        "你睡眠怎么样？容易失眠吗？",
+        "你平时容易出汗吗？（不活动也出汗）",
+    ]
+
+    # 初始化问诊状态
+    if "consult_step" not in st.session_state:
+        st.session_state.consult_step = 0
+        st.session_state.consult_answers = []
+        st.session_state.consult_done = False
+
+    # 显示问诊历史
+    if st.session_state.consult_step == 0 and not st.session_state.consult_done:
+        st.write("您好，我是 AI 老中医。接下来问您几个问题，请如实回答～")
+
+    for i, ans in enumerate(st.session_state.consult_answers):
+        with st.chat_message("assistant"):
+            st.write(CONSULT_QUESTIONS[i])
+        with st.chat_message("user"):
+            st.write(ans)
+
+    # 问诊未结束时显示当前问题
+    if not st.session_state.consult_done and st.session_state.consult_step < len(CONSULT_QUESTIONS):
+        current_q = CONSULT_QUESTIONS[st.session_state.consult_step]
+        with st.chat_message("assistant"):
+            st.write(current_q)
+
+        user_ans = st.chat_input("请回答...", key="consult_input")
+        if user_ans:
+            st.session_state.consult_answers.append(user_ans)
+            st.session_state.consult_step += 1
+            st.rerun()
+
+    # 问诊结束，生成结果
+    if st.session_state.consult_step >= len(CONSULT_QUESTIONS) and not st.session_state.consult_done:
+        with st.spinner("正在辨证分析..."):
+            answers_text = "\n".join([
+                f"问题{i+1}：{q}\n回答：{a}"
+                for i, (q, a) in enumerate(zip(CONSULT_QUESTIONS, st.session_state.consult_answers))
+            ])
+            prompt = f"""你是一位中医老中医。根据下面用户的回答，判断他的体质倾向（气虚/阳虚/阴虚/平和），并给出养生建议。
+
+用户回答：
+{answers_text}
+
+请按以下格式回答：
+1. 体质判断：你的体质倾向是XX质
+2. 特点：用2-3句话描述这个体质的特点
+3. 推荐功法：推荐适合的养生功法
+4. 饮食建议：简单说一下饮食宜忌
+5. 日常调理：1-2个日常小建议
+
+注意：仅供养生参考，不构成医疗诊断。"""
+
+            resp = llm.chat.completions.create(
+                model="deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            result = resp.choices[0].message.content
+
+        st.session_state.consult_done = True
+        st.session_state.consult_result = result
+
+    # 显示问诊结果
+    if st.session_state.consult_done:
+        st.divider()
+        st.subheader("📝 辨证结果")
+        st.write(st.session_state.get("consult_result", ""))
+        st.info("以上结果仅供养生参考，不能替代专业医生诊断。如有明显不适，请及时就医。")
+
+        if st.button("重新问诊"):
+            st.session_state.consult_step = 0
+            st.session_state.consult_answers = []
+            st.session_state.consult_done = False
+            st.rerun()
